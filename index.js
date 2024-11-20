@@ -3,6 +3,7 @@ const app = express();
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
 const connectDB = require("./config/connectDB");
+const authRoutes = require("./routes/authRoutes");
 
 require("dotenv").config();
 
@@ -17,6 +18,9 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json());
 app.use(cookieParser());
+
+// routes
+app.use("/auth", authRoutes);
 
 app.get("/", (req, res) => {
   res.status(200).send("Welcome to the page");
