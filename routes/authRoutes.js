@@ -1,37 +1,45 @@
 const express = require("express");
-const verifyToken = require("../middlewares/verifyToken");
-const verifyAdmin = require("../middlewares/verifyAdmin");
-const User = require("../models/userSchema");
 const {
-  registerUser,
+  createUser,
   loginUser,
-  logoutUser,
-  getProfile,
-  updateProfile,
+  logOutCurrentUser,
   getAllUsers,
-  deleteUser,
-  promoteToSeller,
-} = require("../controllers/userControllers");
+  getCurrentUser,
+  updateCurrentProfile,
+  deleteUserById,
+  getUserById,
+  updateUserRoleByAdmin,
+} = require("../controllers/userControllers.js");
+const {
+  authenticate,
+  authorizedAdmin,
+  authorizedSeller,
+  authorizedBuyer,
+} = require("../middlewares/authMiddlewares.js");
 
 const router = express.Router();
 
-// Public Routes
-router.post("/register", registerUser);
-router.post("/login", loginUser);
+// Create user or get all users (Admin only)
+router
+  .route("/")
+  .post(createUser)
+  .get(authenticate, authorizedAdmin, getAllUsers);
 
-// Protected Routes
-router.post("/logout", logoutUser);
-router.get("/profile", verifyToken, getProfile);
-router.put("/profile", verifyToken, updateProfile);
+// User authentication routes
+router.route("/auth").post(loginUser);
+router.route("/logout").post(logOutCurrentUser);
 
-// Admin Routes
-router.get("/users", verifyToken, verifyAdmin(User), getAllUsers);
-router.delete("/user/:userId", verifyToken, verifyAdmin(User), deleteUser); // Delete user by admin
-router.put(
-  "/users/:id/promote",
-  verifyToken,
-  verifyAdmin(User),
-  promoteToSeller
-); // Promote user to seller by admin
+// Profile routes
+router
+  .route("/profile")
+  .get(authenticate, getCurrentUser)
+  .put(authenticate, updateCurrentProfile);
+
+// Admin routes (Role management, delete users)
+router
+  .route("/:id")
+  .delete(authenticate, authorizedAdmin, deleteUserById)
+  .get(authenticate, authorizedAdmin, getUserById)
+  .put(authenticate, authorizedAdmin, updateUserRoleByAdmin);
 
 module.exports = router;

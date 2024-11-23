@@ -1,137 +1,204 @@
-const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
+const asyncHandler = require("../middlewares/asyncHandler");
 const User = require("../models/userSchema");
+const bcrypt = require("bcryptjs");
+const createToken = require("../utils/createToken");
 
-// Register new user
-exports.registerUser = async (req, res) => {
-  try {
-    const { email, password, name } = req.body;
-    const existingUser = await User.findOne({ email });
+// Create or sign up user
+const createUser = asyncHandler(async (req, res, next) => {
+  const { username, email, password, role } = req.body;
 
-    if (existingUser)
-      return res.status(400).json({ message: "User already exists" });
-
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const newUser = new User({ email, password: hashedPassword, name });
-
-    await newUser.save();
-    res.status(201).json({ message: "User registered successfully" });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+  if (!username || !email || !password) {
+    res.status(400);
+    throw new Error("Please fill all inputs");
   }
-};
+
+  const userExists = await User.findOne({ email });
+  if (userExists) {
+    res.status(400).send("This email already exists");
+    return;
+  }
+
+  const salt = await bcrypt.genSalt(11);
+  const securePassword = await bcrypt.hash(password, salt);
+
+  // Only allow admin to assign a role other than "buyer"
+  const userRole = req.user && req.user.role === "admin" ? role : "buyer";
+
+  const newUser = new User({
+    username,
+    email,
+    password: securePassword,
+    role: userRole,
+  });
+
+  try {
+    await newUser.save();
+    createToken(res, newUser._id);
+    res.status(201).json({
+      _id: newUser._id,
+      username: newUser.username,
+      email: newUser.email,
+      role: newUser.role,
+    });
+  } catch (err) {
+    console.error("Error saving user:", err.message);
+    res.status(400).json({ message: "Invalid data", error: err.message });
+  }
+});
 
 // Login user
-exports.loginUser = async (req, res) => {
-  try {
-    const { email, password } = req.body;
+const loginUser = asyncHandler(async (req, res) => {
+  const { email, password } = req.body;
+  const existingUser = await User.findOne({ email });
 
-    const user = await User.findOne({ email });
-    if (!user) return res.status(404).json({ message: "User not found" });
-
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-    if (!isPasswordValid)
-      return res.status(401).json({ message: "Invalid credentials" });
-
-    const token = jwt.sign(
-      { id: user._id, email: user.email, role: user.role },
-      process.env.ACCESS_TOKEN_SECRET,
-      { expiresIn: "1d" }
-    );
-
-    res.cookie("token", token, { httpOnly: true });
-    res.status(200).json({ message: "Logged in successfully", user });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+  if (!existingUser) {
+    res.status(401).send("Invalid email or password");
+    return;
   }
-};
 
-// Logout user
-exports.logoutUser = (req, res) => {
-  res.clearCookie("token");
-  res.status(200).json({ message: "Logged out successfully" });
-};
-
-// Get user's profile
-exports.getProfile = (req, res) => {
-  const user = req.user;
-  res.status(200).json(user);
-};
-
-// Update user's profile
-exports.updateProfile = async (req, res) => {
-  try {
-    const { name, password } = req.body;
-    const hashedPassword = password
-      ? await bcrypt.hash(password, 10)
-      : undefined;
-    const updatedUser = await User.findByIdAndUpdate(
-      req.user.id,
-      { name, password: hashedPassword },
-      { new: true }
-    );
-    res.status(200).json(updatedUser);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+  const isPassword = await bcrypt.compare(password, existingUser.password);
+  if (!isPassword) {
+    res.status(401).send("Invalid email or password");
+    return;
   }
-};
 
-// Get all users (for admins)
-exports.getAllUsers = async (req, res) => {
-  try {
-    const users = await User.find();
-    res.status(200).json(users);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+  createToken(res, existingUser._id);
+  res.status(200).json({
+    _id: existingUser._id,
+    username: existingUser.username,
+    email: existingUser.email,
+    role: existingUser.role,
+  });
+});
+
+// Log out current user
+const logOutCurrentUser = asyncHandler(async (req, res) => {
+  res.cookie("jwt", "", {
+    httpOnly: true,
+    expires: new Date(0),
+  });
+  res.status(200).json({ message: "Logout successfully" });
+});
+
+// Get all users
+const getAllUsers = asyncHandler(async (req, res) => {
+  const users = await User.find({});
+  res.json(users);
+});
+
+// Get current user profile
+const getCurrentUser = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.user._id);
+
+  if (user) {
+    res.json({
+      _id: user._id,
+      username: user.username,
+      email: user.email,
+      role: user.role,
+    });
+  } else {
+    res.status(404);
+    throw new Error("User not found");
   }
-};
+});
 
-// Delete user by Admin
-exports.deleteUser = async (req, res) => {
-  try {
-    const { userId } = req.params; // Get user ID from the route params
+// Update current user's profile
+const updateCurrentProfile = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.user._id);
 
-    // Find the user to delete
-    const user = await User.findById(userId);
+  if (user) {
+    user.username = req.body.username || user.username;
+    user.email = req.body.email || user.email;
 
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
+    if (req.body.password) {
+      const salt = await bcrypt.genSalt(11);
+      const securePassword = await bcrypt.hash(req.body.password, salt);
+      user.password = securePassword;
     }
 
-    // Delete the user
-    await User.findByIdAndDelete(userId);
+    const updatedUser = await user.save();
 
-    res.status(200).json({ message: "User deleted successfully" });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.json({
+      _id: updatedUser._id,
+      username: updatedUser.username,
+      email: updatedUser.email,
+      role: updatedUser.role,
+    });
+  } else {
+    res.status(404);
+    throw new Error("User not found");
   }
-};
+});
 
-// Promote a user to Seller (Admin only)
-exports.promoteToSeller = async (req, res) => {
-  try {
-    const { id } = req.params; // Get user ID from route params
+// Delete user by admin
+const deleteUserById = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.params.id);
 
-    // Find the user by ID
-    const user = await User.findById(id);
+  if (user) {
+    if (user.role === "admin") {
+      res.status(400);
+      throw new Error("Cannot delete admin user");
+    }
+    await User.deleteOne({ _id: user._id });
+    res.json({ message: "User removed" });
+  } else {
+    res.status(404);
+    throw new Error("User not found");
+  }
+});
 
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
+// Get user by ID
+const getUserById = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.params.id);
+  if (user) {
+    res.json(user);
+  } else {
+    res.status(404);
+    throw new Error("User not found");
+  }
+});
+
+// Update user by admin (including role management)
+const updateUserRoleByAdmin = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.params.id);
+
+  if (user) {
+    if (user.role === "admin") {
+      res.status(400);
+      throw new Error("Cannot modify admin role");
     }
 
-    // Check if the user is already a seller
-    if (user.role === "seller") {
-      return res.status(400).json({ message: "User is already a seller" });
+    const { role } = req.body;
+    if (role && ["buyer", "seller", "admin"].includes(role)) {
+      user.role = role;
+    } else {
+      res.status(400);
+      throw new Error("Invalid role");
     }
 
-    // Update the user's role to seller
-    user.role = "seller";
-    await user.save();
+    const updatedUser = await user.save();
 
-    res
-      .status(200)
-      .json({ message: "User successfully promoted to seller", user });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.json({
+      _id: updatedUser._id,
+      username: updatedUser.username,
+      email: updatedUser.email,
+      role: updatedUser.role,
+    });
+  } else {
+    res.status(404);
+    throw new Error("User not found");
   }
+});
+
+module.exports = {
+  createUser,
+  loginUser,
+  logOutCurrentUser,
+  getAllUsers,
+  getCurrentUser,
+  updateCurrentProfile,
+  deleteUserById,
+  getUserById,
+  updateUserRoleByAdmin,
 };
